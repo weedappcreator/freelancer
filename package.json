@@ -1,0 +1,52 @@
+{
+  "name": "freelance-revenue-os",
+  "version": "0.1.0",
+  "description": "AI-powered freelance client acquisition system — terminal-first, LLM-agnostic",
+  "type": "module",
+  "main": "dist/cli/index.js",
+  "bin": {
+    "freelance": "dist/cli/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "start": "node dist/cli/index.js",
+    "status": "node dist/cli/index.js status",
+    "doctor": "node dist/cli/index.js doctor",
+    "lint": "tsc --noEmit",
+    "clean": "rm -rf dist",
+    "db:init": "node -e \"import('./dist/db/database.js').then(m => m.initializeDatabase())\"",
+    "test": "node --test dist/**/*.test.js"
+  },
+  "keywords": [
+    "freelance",
+    "revenue",
+    "ai-agents",
+    "crm",
+    "lead-generation",
+    "automation",
+    "claude",
+    "openrouter",
+    "llm"
+  ],
+  "author": "",
+  "license": "ISC",
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "dependencies": {
+    "better-sqlite3": "^13.0.3",
+    "chalk": "^6.0.1",
+    "cli-table3": "^0.6.5",
+    "commander": "^15.0.0",
+    "dotenv": "^18.0.4",
+    "uuid": "^14.0.2",
+    "zod": "^4.6.5"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^9.6.0",
+    "@types/node": "^26.6.3",
+    "@types/uuid": "^10.0.0",
+    "typescript": "^7.0.2"
+  }
+}

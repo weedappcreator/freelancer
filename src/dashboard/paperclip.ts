@@ -55,23 +55,40 @@ export class PaperclipBridge {
       agent.currentTask = task;
       agent.lastHeartbeat = new Date().toISOString();
     }
+    this.postHeartbeat({ agent: agentId, status, currentTask: task });
   }
 
-  /** Bridge Revenue OS events to Paperclip format */
+  /** POST heartbeat to the Vercel dashboard */
+  private async postHeartbeat(payload: Record<string, unknown>) {
+    try {
+      await fetch(`${this.baseUrl}/api/heartbeat`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+    } catch {
+      // Dashboard may not be running — silent fail
+    }
+  }
+
+  /** Bridge Revenue OS events to dashboard */
   private setupEventBridge() {
     events.on("*", async (event) => {
-      // Transform Revenue OS events into Paperclip heartbeats
       const heartbeat = {
-        type: "heartbeat",
         agent: event.actor,
-        event: event.eventType,
-        timestamp: event.occurredAt,
-        metadata: event.metadata,
+        status: "working",
+        event: {
+          eventType: event.eventType,
+          actor: event.actor,
+          entityType: event.entityType,
+          entityId: event.entityId,
+          occurredAt: event.occurredAt,
+          metadata: event.metadata,
+        },
       };
 
-      // In production, POST to Paperclip server
-      // For now, log for observability
       logger.debug("Paperclip heartbeat", heartbeat);
+      this.postHeartbeat(heartbeat);
     });
   }
 

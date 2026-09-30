@@ -146,50 +146,43 @@ const deduped = newLeads.filter(l => {
 });
 console.log('After dedup: ' + deduped.length + ' new (removed ' + (newLeads.length - deduped.length) + ' duplicates)');
 
-// Check websites & extract emails
-async function processLeads() {
-  const results = [];
+// Check websites & extract emails — PARALLEL (10 at a time)
+async function enrichLead(lead) {
+  let websiteLive = null, websiteHttps = false, contactEmail = null;
+  if (lead.website) {
+    try {
+      const url = lead.website.startsWith('http') ? lead.website : 'https://' + lead.website;
+      const ctrl = new AbortController();
+      const to = setTimeout(() => ctrl.abort(), 6000);
+      const resp = await fetch(url, { signal: ctrl.signal, redirect: 'follow' });
+      clearTimeout(to);
+      websiteLive = resp.ok || resp.status === 403 || resp.status === 405;
+      websiteHttps = url.startsWith('https://');
+      if (resp.ok) {
+        const html = await resp.text();
+        const emails = html.match(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g) || [];
+        contactEmail = emails.filter(e => !e.includes('example.com') && !e.includes('sentry') && !e.includes('webpack') && !e.includes('schema.org') && !e.includes('wixpress') && !e.includes('googleapis') && !e.endsWith('.png') && !e.endsWith('.jpg') && e.length < 60)[0] || null;
+      }
+    } catch { websiteLive = false; }
+  }
+  return { websiteLive, websiteHttps, contactEmail };
+}
 
+async function processLeads() {
+  // Parallel enrichment — 10 concurrent
+  const BATCH = 10;
+  const enriched = new Array(deduped.length);
+  for (let b = 0; b < deduped.length; b += BATCH) {
+    const batch = deduped.slice(b, b + BATCH);
+    const results = await Promise.all(batch.map(enrichLead));
+    results.forEach((r, i) => { enriched[b + i] = r; });
+  }
+
+  const results = [];
   for (let i = 0; i < deduped.length; i++) {
     const lead = deduped[i];
     const category = lead._category;
-
-    // Website check
-    let websiteLive = null;
-    let websiteHttps = false;
-    if (lead.website) {
-      try {
-        const url = lead.website.startsWith('http') ? lead.website : 'https://' + lead.website;
-        const ctrl = new AbortController();
-        const to = setTimeout(() => ctrl.abort(), 8000);
-        const resp = await fetch(url, { method: 'HEAD', signal: ctrl.signal, redirect: 'follow' });
-        clearTimeout(to);
-        websiteLive = resp.ok || resp.status === 403 || resp.status === 405;
-        websiteHttps = url.startsWith('https://');
-      } catch { websiteLive = false; }
-    }
-
-    // Extract email
-    let contactEmail = null;
-    if (lead.website && websiteLive) {
-      try {
-        const url = lead.website.startsWith('http') ? lead.website : 'https://' + lead.website;
-        const ctrl = new AbortController();
-        const to = setTimeout(() => ctrl.abort(), 10000);
-        const resp = await fetch(url, { signal: ctrl.signal, redirect: 'follow' });
-        clearTimeout(to);
-        if (resp.ok) {
-          const html = await resp.text();
-          const emails = html.match(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g) || [];
-          const filtered = emails.filter(e =>
-            !e.includes('example.com') && !e.includes('sentry') && !e.includes('webpack') &&
-            !e.includes('schema.org') && !e.includes('wixpress') && !e.includes('googleapis') &&
-            !e.endsWith('.png') && !e.endsWith('.jpg') && e.length < 60
-          );
-          contactEmail = filtered[0] || null;
-        }
-      } catch {}
-    }
+    const { websiteLive, websiteHttps, contactEmail } = enriched[i];
 
     // Pain points
     const pains = [];
@@ -279,68 +272,56 @@ async function processLeads() {
   console.log('📤 Leads with emails to send: ' + toSend.length);
 
   if (toSend.length > 0 && '${DRY_RUN}' !== 'true') {
-    const nodemailer = require('nodemailer');
-    const transporter = nodemailer.createTransport({
-      host: process.env.SMTP_HOST || 'smtp.gmail.com',
-      port: Number(process.env.SMTP_PORT || 587),
-      secure: Number(process.env.SMTP_PORT || 587) === 465,
-      auth: { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS },
-    });
-
+    const resendKey = process.env.RESEND_API_KEY;
+    const smtpFrom = process.env.SMTP_FROM || 'weed@edouardautomations.engineering';
     const hubspotToken = process.env.HUBSPOT_ACCESS_TOKEN;
     const hsHeaders = { Authorization: 'Bearer ' + hubspotToken, 'Content-Type': 'application/json' };
 
     let sent = 0, failed = 0, synced = 0;
 
-    for (const lead of toSend) {
-      try {
-        await transporter.sendMail({
-          from: process.env.SMTP_FROM,
-          to: lead.contactEmail,
-          subject: lead.emailDraft.subject,
-          text: lead.emailDraft.body,
-          replyTo: process.env.SMTP_FROM,
-        });
-        lead.status = 'sent';
-        sent++;
-        console.log('  ✅ ' + lead.name + ' → ' + lead.contactEmail);
+    // Send in batches of 5 parallel
+    for (let b = 0; b < toSend.length; b += 5) {
+      const batch = toSend.slice(b, b + 5);
+      await Promise.all(batch.map(async (lead) => {
+        try {
+          // Send via Resend API (fast, no SMTP handshake)
+          const emailResp = await fetch('https://api.resend.com/emails', {
+            method: 'POST',
+            headers: { Authorization: 'Bearer ' + resendKey, 'Content-Type': 'application/json' },
+            body: JSON.stringify({ from: 'Weed Kerwing Edouard <' + smtpFrom + '>', to: lead.contactEmail, subject: lead.emailDraft.subject, text: lead.emailDraft.body, reply_to: smtpFrom })
+          }).then(r => r.json());
+          if (!emailResp.id) throw new Error(emailResp.message || 'Resend failed');
+          lead.status = 'sent';
+          sent++;
+          console.log('  ✅ ' + lead.name + ' → ' + lead.contactEmail);
 
-        // Sync to HubSpot
-        if (hubspotToken) {
-          try {
-            let domain = '';
-            if (lead.website) try { domain = new URL(lead.website.startsWith('http') ? lead.website : 'https://' + lead.website).hostname.replace('www.', ''); } catch {}
-
-            const compProps = { name: lead.name, city: 'Miami', state: 'FL', country: 'US', industry: lead.category };
-            if (domain) compProps.domain = domain;
-            const compResp = await fetch('https://api.hubapi.com/crm/v3/objects/companies', { method: 'POST', headers: hsHeaders, body: JSON.stringify({ properties: compProps }) }).then(r => r.json());
-            const companyId = compResp.id;
-
-            const contactResp = await fetch('https://api.hubapi.com/crm/v3/objects/contacts', { method: 'POST', headers: hsHeaders, body: JSON.stringify({ properties: { email: lead.contactEmail, company: lead.name, phone: lead.phone || '', city: 'Miami', state: 'FL', lifecyclestage: 'lead', hs_lead_status: 'NEW' } }) }).then(r => r.json());
-            const contactId = contactResp.id;
-
-            if (companyId && contactId) {
-              await fetch('https://api.hubapi.com/crm/v3/objects/contacts/' + contactId + '/associations/companies/' + companyId + '/1', { method: 'PUT', headers: hsHeaders });
-
-              const amounts = { 'ai-automation': '2500', 'website-redesign': '2500', 'review-reputation': '1200', 'crm-pipeline': '2000', 'social-content': '1500' };
-              await fetch('https://api.hubapi.com/crm/v3/objects/deals', { method: 'POST', headers: hsHeaders, body: JSON.stringify({ properties: { dealname: lead.name + ' — ' + lead.matchedService.name, pipeline: 'default', dealstage: 'appointmentscheduled', amount: amounts[lead.matchedService.id] || '2000', closedate: new Date(Date.now() + 30*24*60*60*1000).toISOString() } }) }).then(async r => {
-                const deal = await r.json();
-                if (deal.id) {
-                  await fetch('https://api.hubapi.com/crm/v3/objects/deals/' + deal.id + '/associations/contacts/' + contactId + '/3', { method: 'PUT', headers: hsHeaders });
-                  if (companyId) await fetch('https://api.hubapi.com/crm/v3/objects/deals/' + deal.id + '/associations/companies/' + companyId + '/5', { method: 'PUT', headers: hsHeaders });
-                }
-              });
-              synced++;
-              console.log('     🔗 HubSpot synced');
-            }
-          } catch (e) { console.log('     ⚠️  HubSpot: ' + (e.message || e)); }
+          // Sync to HubSpot (parallel with next send)
+          if (hubspotToken) {
+            try {
+              let domain = '';
+              if (lead.website) try { domain = new URL(lead.website.startsWith('http') ? lead.website : 'https://' + lead.website).hostname.replace('www.', ''); } catch {}
+              const compProps = { name: lead.name, city: 'Miami', state: 'FL', country: 'US', industry: lead.category };
+              if (domain) compProps.domain = domain;
+              const comp = await fetch('https://api.hubapi.com/crm/v3/objects/companies', { method: 'POST', headers: hsHeaders, body: JSON.stringify({ properties: compProps }) }).then(r => r.json());
+              const contact = await fetch('https://api.hubapi.com/crm/v3/objects/contacts', { method: 'POST', headers: hsHeaders, body: JSON.stringify({ properties: { email: lead.contactEmail, company: lead.name, phone: lead.phone || '', city: 'Miami', state: 'FL', lifecyclestage: 'lead', hs_lead_status: 'NEW' } }) }).then(r => r.json());
+              if (comp.id && contact.id) {
+                const amounts = { 'ai-automation': '2500', 'website-redesign': '2500', 'review-reputation': '1200', 'crm-pipeline': '2000', 'social-content': '1500' };
+                await Promise.all([
+                  fetch('https://api.hubapi.com/crm/v3/objects/contacts/' + contact.id + '/associations/companies/' + comp.id + '/1', { method: 'PUT', headers: hsHeaders }),
+                  fetch('https://api.hubapi.com/crm/v3/objects/deals', { method: 'POST', headers: hsHeaders, body: JSON.stringify({ properties: { dealname: lead.name + ' — ' + lead.matchedService.name, pipeline: 'default', dealstage: 'appointmentscheduled', amount: amounts[lead.matchedService.id] || '2000', closedate: new Date(Date.now() + 30*24*60*60*1000).toISOString() } }) }).then(async r => { const d = await r.json(); if (d.id) await Promise.all([fetch('https://api.hubapi.com/crm/v3/objects/deals/' + d.id + '/associations/contacts/' + contact.id + '/3', { method: 'PUT', headers: hsHeaders }), comp.id ? fetch('https://api.hubapi.com/crm/v3/objects/deals/' + d.id + '/associations/companies/' + comp.id + '/5', { method: 'PUT', headers: hsHeaders }) : null].filter(Boolean)); })
+                ]);
+                synced++;
+              }
+            } catch (e) { console.log('     ⚠️  HubSpot: ' + (e.message || e)); }
+          }
+        } catch (err) {
+          lead.status = 'failed';
+          failed++;
+          console.log('  ❌ ' + lead.name + ' — ' + (err.message || err));
         }
-      } catch (err) {
-        lead.status = 'failed';
-        failed++;
-        console.log('  ❌ ' + lead.name + ' — ' + (err.message || err));
-      }
-      await new Promise(r => setTimeout(r, 4000));
+      }));
+      // 1s pause between batches (Resend allows 2/s, we do 5 per second burst)
+      await new Promise(r => setTimeout(r, 1000));
     }
 
     // Save updated statuses

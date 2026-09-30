@@ -7,6 +7,8 @@
 
 import { type Config, type LLMProvider } from "../core/config.js";
 import { logger } from "../core/logger.js";
+import { spawn, execSync } from "node:child_process";
+import fs from "node:fs";
 
 // ─── Unified Message Types ──────────────────────────────────────────
 
@@ -239,6 +241,149 @@ function createOllamaProvider(config: Config): LLMProviderAdapter {
   };
 }
 
+// ─── opencode CLI Provider (free models, zero cost) ───────────────────
+
+const OPENCODE_FALLBACK_PATH = "/Users/macbookpro/.opencode/bin/opencode";
+const OPENCODE_JSON_INSTRUCTION = "Reply with ONLY valid JSON, no other text, no tool calls.";
+
+function resolveOpencodeBinary(): string | null {
+  try {
+    const found = execSync("which opencode", { stdio: ["ignore", "pipe", "ignore"] })
+      .toString()
+      .trim()
+      .split("\n")[0]
+      ?.trim();
+    if (found && fs.existsSync(found)) return found;
+  } catch {
+    // not on PATH — fall through to absolute path
+  }
+  if (fs.existsSync(OPENCODE_FALLBACK_PATH)) return OPENCODE_FALLBACK_PATH;
+  return null;
+}
+
+function createOpencodeCliProvider(config: Config): LLMProviderAdapter {
+  return {
+    name: "opencode",
+    isConfigured: () => resolveOpencodeBinary() !== null,
+    async complete(req) {
+      const start = Date.now();
+      const binary = resolveOpencodeBinary();
+      if (!binary) {
+        throw new Error(
+          `opencode CLI binary not found. Install opencode or ensure 'opencode' is on PATH (looked for 'opencode' on PATH and ${OPENCODE_FALLBACK_PATH}).`
+        );
+      }
+      const model = req.model ?? config.opencodeModel;
+
+      // `opencode run` takes a single message — join as ROLE lines.
+      let prompt = req.messages.map((m) => `${m.role.toUpperCase()}: ${m.content}`).join("\n\n");
+      if (req.jsonMode) {
+        const systems = req.messages
+          .filter((m) => m.role === "system")
+          .map((m) => m.content)
+          .join("\n");
+        prompt =
+          (systems ? systems + "\n\n" : "") + prompt + "\n\n" + OPENCODE_JSON_INSTRUCTION;
+      }
+
+      let stdout: string;
+      try {
+        // NOTE: uses spawn (not execFile) with stdin ignored. execFile holds
+        // the child's stdin pipe open, and `opencode run` blocks waiting for
+        // stdin EOF in that case — the call would hang until timeout.
+        // stdio ['ignore', 'pipe', 'pipe'] gives it /dev/null (immediate EOF).
+        stdout = await new Promise<string>((resolve, reject) => {
+          const child = spawn(
+            binary,
+            ["run", prompt, "-m", model, "--format", "json", "--dir", "/tmp"],
+            { stdio: ["ignore", "pipe", "pipe"] }
+          );
+          let out = "";
+          let err = "";
+          const timer = setTimeout(() => {
+            child.kill("SIGKILL");
+            reject(new Error(`opencode CLI call timed out after 300s (model: ${model})`));
+          }, 300_000);
+          timer.unref?.();
+          child.stdout.on("data", (d: Buffer) => {
+            out += d.toString();
+            if (out.length > 16 * 1024 * 1024) {
+              clearTimeout(timer);
+              child.kill("SIGKILL");
+              reject(new Error("opencode CLI output exceeded 16MB"));
+            }
+          });
+          child.stderr.on("data", (d: Buffer) => {
+            err += d.toString();
+          });
+          child.on("error", (e: Error) => {
+            clearTimeout(timer);
+            reject(new Error(`opencode CLI call failed: ${e.message}`));
+          });
+          child.on("close", (code: number | null, signal: string | null) => {
+            clearTimeout(timer);
+            if (code === 0) {
+              resolve(out);
+            } else {
+              reject(
+                new Error(
+                  `opencode CLI call failed (code ${code ?? signal}): ${(err || out).slice(0, 2000)}`
+                )
+              );
+            }
+          });
+        });
+      } catch (err: unknown) {
+        throw err instanceof Error ? err : new Error(`opencode CLI call failed: ${String(err)}`);
+      }
+
+      // stdout is JSON-lines: text parts, step_finish usage, error events.
+      let content = "";
+      let inputTokens = 0;
+      let outputTokens = 0;
+      for (const line of stdout.split("\n")) {
+        const trimmed = line.trim();
+        if (!trimmed) continue;
+        let event: Record<string, unknown>;
+        try {
+          event = JSON.parse(trimmed) as Record<string, unknown>;
+        } catch {
+          continue; // ignore non-JSON lines
+        }
+        const type = event.type as string | undefined;
+        if (type === "text") {
+          const part = event.part as { text?: unknown } | undefined;
+          if (typeof part?.text === "string") content += part.text;
+        } else if (type === "step_finish") {
+          const part = event.part as { tokens?: Record<string, unknown> } | undefined;
+          const tokens = part?.tokens ?? {};
+          const toNum = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : 0);
+          inputTokens += toNum(tokens.input);
+          outputTokens += toNum(tokens.output);
+        } else if (type === "error") {
+          const errInfo = event.error as { message?: unknown } | undefined;
+          throw new Error(
+            `opencode CLI error: ${typeof errInfo?.message === "string" ? errInfo.message : JSON.stringify(event.error ?? event)}`
+          );
+        }
+      }
+
+      return {
+        content,
+        model,
+        provider: "opencode" as LLMProvider,
+        usage: {
+          inputTokens,
+          outputTokens,
+          totalTokens: inputTokens + outputTokens,
+        },
+        finishReason: "stop",
+        latencyMs: Date.now() - start,
+      };
+    },
+  };
+}
+
 // ─── Provider Registry ──────────────────────────────────────────────
 
 export class LLMRegistry {
@@ -251,6 +396,7 @@ export class LLMRegistry {
     this.register(createOpenAICompatibleProvider(config, "openrouter"));
     this.register(createOpenAICompatibleProvider(config, "openai"));
     this.register(createOllamaProvider(config));
+    this.register(createOpencodeCliProvider(config));
   }
 
   private register(provider: LLMProviderAdapter) {

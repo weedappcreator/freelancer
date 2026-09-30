@@ -27,6 +27,42 @@ export interface CRMSyncResult {
   summary: string;
 }
 
+/** Map free-text industry to HubSpot's allowed enum values */
+function mapIndustryToHubSpot(industry: string): string {
+  const lower = (industry ?? "").toLowerCase();
+  const map: Array<[RegExp, string]> = [
+    [/e.?commerce|retail|shop|store|apparel|fashion|footwear|eyewear/i, "CONSUMER_GOODS"],
+    [/food|beverage|grocery|dairy|organic/i, "FOOD_BEVERAGES"],
+    [/beauty|cosmetic|haircare|skincare/i, "COSMETICS"],
+    [/health|medical|clinic|dental|hospital|pharma|telehealth|therapy/i, "HOSPITAL_HEALTH_CARE"],
+    [/wellness|fitness/i, "HEALTH_WELLNESS_AND_FITNESS"],
+    [/mental\s*health|behavioral/i, "HOSPITAL_HEALTH_CARE"],
+    [/saas|software|platform|app\b/i, "COMPUTER_SOFTWARE"],
+    [/internet|web|online/i, "INTERNET"],
+    [/marketing|advertising|agency/i, "MARKETING_AND_ADVERTISING"],
+    [/real\s*estate|proptech|property/i, "COMMERCIAL_REAL_ESTATE"],
+    [/fintech|payment|banking|financial/i, "FINANCIAL_SERVICES"],
+    [/education|learning|edtech/i, "EDUCATION_MANAGEMENT"],
+    [/design|graphic/i, "DESIGN"],
+    [/insurance/i, "INSURANCE"],
+    [/entertainment|media/i, "ENTERTAINMENT"],
+    [/construction|building/i, "CONSTRUCTION"],
+    [/automotive|car/i, "AUTOMOTIVE"],
+    [/telecom|communication/i, "TELECOMMUNICATIONS"],
+    [/energy|oil|gas/i, "OIL_ENERGY"],
+    [/legal|law/i, "LAW_PRACTICE"],
+    [/accounting|audit/i, "ACCOUNTING"],
+    [/non.?profit|charity/i, "NONPROFIT_ORGANIZATION_MANAGEMENT"],
+    [/consult/i, "MANAGEMENT_CONSULTING"],
+    [/human\s*resource|hr|recruit/i, "HUMAN_RESOURCES"],
+    [/logistics|transport|shipping/i, "LOGISTICS_AND_SUPPLY_CHAIN"],
+  ];
+  for (const [re, val] of map) {
+    if (re.test(lower)) return val;
+  }
+  return "INFORMATION_TECHNOLOGY_AND_SERVICES";
+}
+
 export function createCRMAgent(llm: LLMRegistry, config: Config) {
   return new (class extends BaseAgent<CRMSyncInput, CRMSyncResult> {
     hubspot: HubSpotClient | null = null;
@@ -87,9 +123,13 @@ export function createCRMAgent(llm: LLMRegistry, config: Config) {
           // Push company
           const props: Record<string, string> = { name: company.name };
           if (company.domain) props.domain = company.domain;
-          if (company.industry) props.industry = company.industry;
+          if (company.industry) props.industry = mapIndustryToHubSpot(company.industry);
           if (company.geography) props.city = company.geography;
-          if (company.employee_band) props.numberofemployees = company.employee_band;
+          if (company.employee_band) {
+            // HubSpot expects an integer; extract the first number from ranges like "20-50"
+            const num = company.employee_band.match(/\d+/);
+            if (num) props.numberofemployees = num[0];
+          }
 
           const hsCompany = await hs.upsertCompany(company.domain ?? "", props);
 

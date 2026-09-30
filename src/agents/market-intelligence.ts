@@ -104,7 +104,7 @@ RULES:
 - Do not invent specific company data — use realistic examples with clear reasoning`,
         llm,
         temperature: 0.4,
-        maxTokens: 4096,
+        maxTokens: 8192,
       });
     }
 

@@ -88,7 +88,7 @@ RULES:
 - Be specific about WHY each score is what it is`,
         llm,
         temperature: 0.2,
-        maxTokens: 3000,
+        maxTokens: 8192,
       });
     }
 

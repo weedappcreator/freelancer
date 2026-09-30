@@ -100,7 +100,7 @@ RULES:
 - Target the count requested but prioritize quality over quantity.`,
         llm,
         temperature: 0.5,
-        maxTokens: 4096,
+        maxTokens: 8192,
       });
     }
 

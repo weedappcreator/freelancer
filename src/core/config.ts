@@ -5,7 +5,7 @@ import fs from "node:fs";
 
 dotenv.config();
 
-export const LLMProviderSchema = z.enum(["anthropic", "openrouter", "openai", "ollama"]);
+export const LLMProviderSchema = z.enum(["anthropic", "openrouter", "openai", "ollama", "opencode"]);
 export type LLMProvider = z.infer<typeof LLMProviderSchema>;
 
 export const ApprovalLevelSchema = z.coerce.number().int().min(0).max(4).default(1);
@@ -25,6 +25,9 @@ export const ConfigSchema = z.object({
   // Ollama (local)
   ollamaBaseUrl: z.string().default("http://127.0.0.1:11434/v1"),
   ollamaModel: z.string().default("qwen3.5"),
+
+  // opencode CLI (free models, zero cost — shells out to the opencode binary)
+  opencodeModel: z.string().default("opencode/big-pickle"),
 
   // CRM
   hubspotAccessToken: z.string().optional(),
@@ -74,6 +77,7 @@ export function loadConfig(): Config {
     openaiModel: process.env.OPENAI_MODEL,
     ollamaBaseUrl: process.env.OLLAMA_BASE_URL,
     ollamaModel: process.env.OLLAMA_MODEL,
+    opencodeModel: process.env.OPENCODE_MODEL,
     hubspotAccessToken: process.env.HUBSPOT_ACCESS_TOKEN,
     hubspotPortalId: process.env.HUBSPOT_PORTAL_ID,
     smtpHost: process.env.SMTP_HOST,

@@ -100,8 +100,7 @@ RULES:
         companies = c ? [c] : [];
       } else {
         // Get unscored companies
-        companies = companyRepo.list({ limit: input.batchSize ?? 10 })
-          .filter((c) => c.total_score === null);
+        companies = companyRepo.list({ limit: input.batchSize ?? 10, unscoredOnly: true });
       }
 
       if (companies.length === 0) {

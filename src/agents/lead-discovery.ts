@@ -130,17 +130,62 @@ Service Fit: ${icp.service_fit ?? "general"}`;
         `Return JSON with the discovered array.`,
       ].filter(Boolean).join("\n");
 
-      const response = await this.chat(
+      let response = await this.chat(
         [{ role: "user", content: prompt }],
         { jsonMode: true, temperature: 0.5 }
       );
 
-      let parsed: { discovered: DiscoveredLead[]; summary: string };
-      try {
-        parsed = JSON.parse(response.content);
-      } catch {
-        const match = response.content.match(/\{[\s\S]*\}/);
-        parsed = match ? JSON.parse(match[0]) : { discovered: [], summary: "Parse error" };
+      const parseLeads = (content: unknown): { discovered: DiscoveredLead[]; summary: string } | null => {
+        const text = typeof content === "string" ? content : "";
+        let candidate: unknown = null;
+        try {
+          candidate = JSON.parse(text);
+        } catch {
+          candidate = null;
+        }
+        if (
+          candidate &&
+          typeof candidate === "object" &&
+          Array.isArray((candidate as { discovered?: unknown }).discovered)
+        ) {
+          return candidate as { discovered: DiscoveredLead[]; summary: string };
+        }
+        // Regex-fallback parse for responses wrapped in extra text
+        const match = text.match(/\{[\s\S]*\}/);
+        if (match) {
+          try {
+            candidate = JSON.parse(match[0]);
+          } catch {
+            return null;
+          }
+          if (
+            candidate &&
+            typeof candidate === "object" &&
+            Array.isArray((candidate as { discovered?: unknown }).discovered)
+          ) {
+            return candidate as { discovered: DiscoveredLead[]; summary: string };
+          }
+        }
+        return null;
+      };
+
+      let parsed = parseLeads(response.content);
+      let tokensUsed = response.usage.totalTokens;
+      if (!parsed) {
+        // Retry the chat call ONCE on invalid shape (e.g. model returned literal `null`)
+        response = await this.chat(
+          [{ role: "user", content: prompt }],
+          { jsonMode: true, temperature: 0.5 }
+        );
+        tokensUsed += response.usage.totalTokens;
+        parsed = parseLeads(response.content);
+        if (!parsed) {
+          const reason = `Invalid model response after retry (expected object with discovered array, got: ${String(response.content).slice(0, 200)})`;
+          return {
+            data: { discovered: [], saved: 0, duplicatesSkipped: 0, summary: reason },
+            tokensUsed,
+          };
+        }
       }
 
       // Save to database with deduplication
@@ -205,7 +250,7 @@ Service Fit: ${icp.service_fit ?? "general"}`;
           duplicatesSkipped,
           summary: `Discovered ${parsed.discovered.length} leads, saved ${saved}, skipped ${duplicatesSkipped} duplicates`,
         },
-        tokensUsed: response.usage.totalTokens,
+        tokensUsed,
       };
     }
   })();

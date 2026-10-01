@@ -162,7 +162,8 @@ function createOpenAICompatibleProvider(
         throw new Error(`${providerName} API error ${resp.status}: ${err}`);
       }
 
-      const data = (await resp.json()) as {
+      const raw = await resp.text();
+      const data = JSON.parse(raw) as {
         choices: Array<{
           message: { content: string };
           finish_reason: string;
@@ -170,6 +171,18 @@ function createOpenAICompatibleProvider(
         model: string;
         usage: { prompt_tokens: number; completion_tokens: number; total_tokens: number };
       };
+
+      if (!data.choices || !data.choices[0]) {
+        throw new Error(
+          `${providerName} API returned no choices (model: ${model}, HTTP ${resp.status}): ${raw.slice(0, 500)}`
+        );
+      }
+
+      if (typeof data.choices[0].message?.content !== "string") {
+        throw new Error(
+          `${providerName} API returned null content (model: ${model}, HTTP ${resp.status}): ${raw.slice(0, 500)}`
+        );
+      }
 
       const choice = data.choices[0];
       return {

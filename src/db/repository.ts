@@ -129,12 +129,13 @@ export const companyRepo = {
     getDb().prepare(`UPDATE companies SET ${fields.join(", ")} WHERE id = ?`).run(...values);
   },
 
-  list(opts?: { icpId?: string; minScore?: number; limit?: number }): CompanyRow[] {
+  list(opts?: { icpId?: string; minScore?: number; limit?: number; unscoredOnly?: boolean }): CompanyRow[] {
     let sql = "SELECT * FROM companies WHERE 1=1";
     const args: unknown[] = [];
 
     if (opts?.icpId) { sql += " AND icp_id = ?"; args.push(opts.icpId); }
     if (opts?.minScore) { sql += " AND total_score >= ?"; args.push(opts.minScore); }
+    if (opts?.unscoredOnly) { sql += " AND total_score IS NULL"; }
     sql += " ORDER BY total_score DESC NULLS LAST LIMIT ?";
     args.push(opts?.limit ?? 100);
 

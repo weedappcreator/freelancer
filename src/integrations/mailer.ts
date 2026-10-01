@@ -4,6 +4,7 @@
  */
 
 import nodemailer from "nodemailer";
+import type { Transporter } from "nodemailer";
 import { logger } from "../core/logger.js";
 
 export interface SendEmailOptions {
@@ -55,9 +56,9 @@ async function sendViaResend(opts: SendEmailOptions): Promise<SendResult> {
 
 // ─── SMTP Fallback ──────────────────────────────────────────────────
 
-let transporter: nodemailer.Transporter | null = null;
+let transporter: Transporter | null = null;
 
-function getTransporter(): nodemailer.Transporter {
+function getTransporter(): Transporter {
   if (transporter) return transporter;
 
   const host = process.env.SMTP_HOST ?? "smtp.gmail.com";

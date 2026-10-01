@@ -20,6 +20,7 @@ export function getDb(dbPath?: string): Database.Database {
   db = new Database(resolvedPath);
   db.pragma("journal_mode = WAL");
   db.pragma("foreign_keys = ON");
+  db.pragma("busy_timeout = 15000");
 
   logger.info("Database connected", { path: resolvedPath });
   return db;
